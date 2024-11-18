@@ -16,8 +16,8 @@ const saltRounds = 10;
 
 // CORS handling
 const corsOptions = {
-    origin: 'https://hostel-management-roan.vercel.app',
-    credentials: true,
+  origin: ['http://localhost:3000', 'https://hostel-management-roan.vercel.app'],
+  credentials: true,
 };
 
 app.use(cors(corsOptions));
