@@ -3,26 +3,15 @@ import bcrypt from "bcrypt";
 import cors from "cors";
 import config from "./config.js";
 import { createClient } from '@supabase/supabase-js'
-
+import axios from "axios";
+import Stripe from "stripe"
+import jwt from 'jsonwebtoken';
 // Create a single supabase client for interacting with your database
-const supabase = createClient( config.BASE_URL,  config.BASE_KEY ) 
 
 const app = express();
 const port = 5173;
 
 const saltRounds = 10;
-// const myPlaintextPassword = 'om_anand';
-// const someOtherPlaintextPassword = 'not_bacon';
-
-// bcrypt.genSalt(saltRounds, function(err, salt) {
-//     bcrypt.hash(myPlaintextPassword, salt, function(err, hash) {
-//         // Store hash in your password DB.
-//         console.log(hash)
-//     });
-// });
-// //bcrypt.compare(myPlaintextPassword, hash, function(err, result) {
-    // result == true
-//});
 
 
 // CORS handling
@@ -37,196 +26,177 @@ app.use(cors(corsOptions));
 
 app.use(express.json());
 
+app.listen(port, () => {
+    console.log(`Example app listening on port ${port}`);
+});
+
+
+const stripeSecretKey = config.STRIPE_SECRET_KEY
+const stripe = new Stripe(stripeSecretKey)
+const supabase = createClient( config.BASE_URL,  config.BASE_KEY ) 
+
 app.get("/", (req, res) => {
     res.send("Hello World!");
 });
 
-//LOGIN ROUTES
+app.post("/create-payment-intent", async (req, res) =>{
 
-app.post("/student/authenticate", async (req, res) => {
-   
-    const { email , password } = req.body
-    // checking if user already exists 
+    const{ amount , shipping , description , hosteltype , room_id } = req.body;
+    const address = {
+        city : shipping.city,
+        country : "IN",
+        line1 : shipping.state,
+        line2 : shipping.city,
+        postal_code : shipping.pincode,
+        state : shipping.state
+    }
+    const metadata = {
+        hosteltype : hosteltype,
+        room_id : room_id
+    }
 
+    console.log( "BOOM paymnet request received for ---> " , amount )
     try {
-        const { data, error, status } = await supabase
-            .from('user_auth')
-            .select('*') 
-            .eq('email', email) 
-            .single(); 
-        
-        if (error && status !== 406) {
-            console.error('Error querying user by email:', error);
-            return res.status(500).json({ message: "Error fetching user details", user : null , error: error });
-        }
-        
-        if (!data) {
-            console.log('User not found');
-            return res.status(404).json({ message: "User not found" , user : null });
-        }
-
-        const pass_status = await bcrypt.compare(password, data.password)
-        // If user is found, return the user data
-        return res.status(200).json({
-            message: "User found",
-            user: data,
-            valid_creds : pass_status
-        });
-
-    } catch (err) {
-        console.error('Unexpected Error:', err);
-        return res.status(500).json({ message: "Server error", error: err.message || err });
-    }
     
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount, 
+          currency: 'inr', 
+          description: description,
+          receipt_email : shipping.email,
+          shipping:{
+            name : shipping.name,
+            address : address
+          },
+          automatic_payment_methods: {
+            enabled: true,
+          },
+          metadata : metadata
+        });
+    
+        // Send the client secret to the frontend
+        res.status(200).send({
+          clientSecret: paymentIntent.client_secret
+        });
+      } catch (error) {
+        res.status(500).send({
+          error: error.message
+        });
+      }
 
 });
 
-app.post("/admin/authenticate", async (req, res) => {
-    const { email , password } = req.body
-
+app.get('/get-payment-details/:paymentIntentId', async (req, res) => {
+    const { paymentIntentId } = req.params;
     try {
-        const { data, error, status } = await supabase
-            .from('user_auth')
-            .select('*') 
-            .eq('email', email) 
-            .single(); 
-        
-        if (error && status !== 406) {
-            console.error('Error querying user by email:', error);
-            return res.status(500).json({ message: "Error fetching user details", user : null , error: error });
-        }
-        
-        if (!data) {
-            console.log('User not found');
-            return res.status(404).json({ message: "User not found" , user : null });
-        }
-
-        const pass_status = await bcrypt.compare(password, data.password)
-        // If user is found, return the user data
-        return res.status(200).json({
-            message: "User found",
-            user: data,
-            valid_creds : pass_status
-        });
-
-    } catch (err) {
-        console.error('Unexpected Error:', err);
-        return res.status(500).json({ message: "Server error", error: err.message || err });
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      res.json(paymentIntent); // Send the payment details back to the frontend
+    } catch (error) {
+      console.error('Error retrieving payment intent:', error);
+      res.status(500).json({ error: 'Unable to fetch payment details' });
     }
-    
+  });
+
+
+  // admin portion
+
+
+  app.post('/admin/login', async (req, res) => {
+    const { email , password } = req.body;
+
+    if( email!== config.ADMIN_USERNAME || password !== config.ADMIN_PASSWORD){
+        return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+
+
+    const payload = { username: email, role: 'admin' };  // You can add more details if necessary
+    const token = jwt.sign(payload, config.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(200).json({ token : token , email : email , type : 'admin' });
 });
 
 
-app.post("/hr/authenticate", (req, res) => {
-    const email = req.email
-    const password = req.password
-});
+const authenticateAdmin = (req, res, next) => {
+  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1]; // Bearer <token>
 
-app.post("/guest/authenticate", (req, res) => {
-    const email = req.email
-    const password = req.password
-});
+  if (!token) {
+      return res.status(401).json({ message: 'Token missing, please provide an Authorization token.' });
+  }
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}!`);
-})
+  jwt.verify(token, config.JWT_SECRET, (err, decoded) => {
+      if (err) {
+          return res.status(403).json({ message: 'Invalid or expired token.' });
+      }
+
+      // Optionally, check if the decoded user is an admin
+      if (decoded.role !== 'admin') {
+          return res.status(403).json({ message: 'Not authorized as admin.' });
+      }
+
+      req.user = decoded;  // Add decoded user info to the request
+      next();  // Proceed to the next middleware or route handler
+  });
+};
 
 
-// SIGNUP ROUTES
+app.post('/admin/resolve-application', authenticateAdmin, async (req, res) => {
 
-app.post("/student/create_account", async (req, res) => {
-    const { email , password , role } = req.body
-    const encrypted_password = await bcrypt.hash(password, saltRounds);
+  const { application_id } = req.body;
+  console.log( application_id)
+  // Check if application_id is provided
+  if (!application_id) {
+    return res.status(400).json({ error: 'Application ID is required' });
+  }
+
+  try {
+    // Update the status of the application to 'resolved' (true)
     const { data, error } = await supabase
-    .from('user_auth')
-    .insert([
-      { email: email , password: encrypted_password , role : 'student' },
-    ])
-    .select()
-  
-    if( error ){
-      return res.status(500).json({
-          message: "Server error",
-          error: err.message || err
-      });
-    }
-    else{
-      return res.status(201).json({
-          message: "User created successfully",
-          user: data[0]  
-      });    
-    }
-})
+      .from('application_table')  // Your table name
+      .update({ status: true })  // Set status to true (resolved)
+      .eq('application_id', application_id)
+      .select(); // Where the application_id matches
 
-app.post("/admin/create_account", async (req, res) => {
-    const { email , password , role } = req.body
-    const encrypted_password = await bcrypt.hash(password, saltRounds);
-    const { data, error } = await supabase
-    .from('user_auth')
-    .insert([
-      { email: email , password: encrypted_password , role : 'admin' },
-    ])
-    .select()
+    if (error) {
+      throw error;
+    }
+    if (data.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
 
-    if( error ){
-      return res.status(500).json({
-          message: "Server error",
-          error: err.message || err
-      });
-    }
-    else{
-      return res.status(201).json({
-          message: "User created successfully",
-          user: data[0]  
-      });    
-    }
-});     
-
-app.post("/hr/create_account", async (req, res) => {
-    const { email , password , role } = req.body  
-    const encrypted_password = await bcrypt.hash(password, saltRounds);
-    const { data , error } = await supabase
-    .from('user_auth')
-    .insert([
-      { email: email , password: encrypted_password , role : 'hr' },
-    ])
-    .select()
-
-    if( error ){
-      return res.status(500).json({
-          message: "Server error",
-          error: err.message || err
-      });
-    }
-    else{
-      return res.status(201).json({
-          message: "User created successfully",
-          user: data[0]  
-      });    
-    }
+    // Successfully updated
+    res.status(200).json({ message: 'Application resolved successfully' });
+  } catch (error) {
+    console.error('Error updating application status:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 
 });
 
-app.post("/guest/create_account", async (req, res) => {
-    const { email , password , role } = req.body
-    const encrypted_password = await bcrypt.hash(password, saltRounds);
-    const { data , error } = await supabase
-    .from('user_auth')
-    .insert([
-      { email: email , password: encrypted_password , role : 'guest' },
-    ])
-    .select()
+app.post('/admin/resolve-complaint', authenticateAdmin, async (req, res) => {
+  const { complaint_id } = req.body;
 
-    if( error ){
-      return res.status(500).json({
-          message: "Server error",
-          error: err.message || err
-      });
+  if (!complaint_id) {
+    return res.status(400).json({ error: 'Complaint ID is required' });
+  }
+
+  try {
+    // Update the status of the complaint to 'resolved' (true)
+    const { data, error } = await supabase
+      .from('complaints_table')  // Your table name
+      .update({ resolved: true })  // Set resolved to true
+      .eq('id', complaint_id) // Where the complaint_id matches
+      .select()
+    if (error) {
+      throw error;
     }
-    else{
-      return res.status(201).json({
-          message: "User created successfully",
-          user: data[0]  
-      });    
+
+    if (data.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
     }
-})
+
+    res.status(200).json({ message: 'Complaint resolved successfully' });
+  } catch (error) {
+    console.error('Error updating complaint status:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
